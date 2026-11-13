@@ -1,12 +1,16 @@
 // On-device document extraction: no server. Images -> OCR; PDFs -> embedded text, with OCR for scanned
 // pages; TXT -> as is. Output matches the backend's `words` array (including "\n\n" paragraph tokens).
 import { createWorker } from 'tesseract.js';
-import * as pdfjs from 'pdfjs-dist';
+// legacy build: runs on older WebKit (every iPhone browser, Safari and Firefox included, uses WebKit)
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 export const LOCAL_MODE = import.meta.env.VITE_LOCAL === '1';
 
 const BASE = import.meta.env.BASE_URL;
 pdfjs.GlobalWorkerOptions.workerSrc = `${BASE}ocr/pdf.worker.min.mjs`;
+
+// iOS caps canvases at ~16M pixels: pick a render scale that stays under it for big pages.
+export const safeScale = (page, want) => { const v = page.getViewport({ scale: 1 }); return Math.min(want, Math.sqrt(12e6 / (v.width * v.height))); };
 
 let workerPromise = null;
 function getOcr(onProgress) {
@@ -39,16 +43,34 @@ export function tidy(text) {
   return text.replace(/(\w)-\n(\w)/g, '$1$2').replace(/([^\n])\n(?!\n)/g, '$1 ');
 }
 
+// Load an image File into something drawable. <img> applies EXIF rotation on iOS; createImageBitmap options are flaky on WebKit.
+async function loadImage(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    await img.decode();
+    return { src: img, width: img.naturalWidth, height: img.naturalHeight };
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 10000); }
+}
+
 // Phone photos are huge; downscale so OCR is fast and memory-safe on iOS (canvas limit ~16MP).
-async function toCanvas(source, maxSide = 2400) {
-  const bmp = source instanceof HTMLCanvasElement ? source : await createImageBitmap(source, { imageOrientation: 'from-image' });
-  const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+// Grayscale + contrast stretch is done by hand (Safari/WebKit ignores ctx.filter).
+async function toCanvas(file, maxSide = 2400) {
+  const im = await loadImage(file);
+  const scale = Math.min(1, maxSide / Math.max(im.width, im.height));
   const c = document.createElement('canvas');
-  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
-  const ctx = c.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.25)';   // helps on uneven phone lighting
-  ctx.drawImage(bmp, 0, 0, c.width, c.height);
-  bmp.close?.();
+  c.width = Math.round(im.width * scale); c.height = Math.round(im.height * scale);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(im.src, 0, 0, c.width, c.height);
+  const d = ctx.getImageData(0, 0, c.width, c.height), px = d.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const g = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114);
+    const v = Math.max(0, Math.min(255, (g - 128) * 1.25 + 128));
+    px[i] = px[i + 1] = px[i + 2] = v;
+  }
+  ctx.putImageData(d, 0, 0);
   return c;
 }
 
@@ -67,7 +89,7 @@ async function fromPdf(file, onStatus) {
     const tc = await page.getTextContent();
     let text = tc.items.map((i) => i.str + (i.hasEOL ? '\n' : ' ')).join('');
     if (text.replace(/\s/g, '').length < 20) {          // scanned page: render and OCR it
-      const vp = page.getViewport({ scale: 2 });
+      const vp = page.getViewport({ scale: safeScale(page, 2) });
       const canvas = document.createElement('canvas');
       canvas.width = vp.width; canvas.height = vp.height;
       await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
