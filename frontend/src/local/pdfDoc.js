@@ -1,5 +1,6 @@
 // On-device stand-in for the backend's manual-layout endpoints (page render, box preview, box extraction).
 // Boxes use the same shape as the server: {x,y,w,h,type,relative}, fractions of the page when relative.
+import { layoutApi } from './layoutStore';
 import { cacheGet, cachePut, cacheKeys, cacheClear, fingerprint } from './pageCache';
 import { pdfjs, ocrCanvas, toWords, tidy, safeScale, PDF_OPTS } from './extract';
 
@@ -112,6 +113,7 @@ export async function openLocalPdf(file) {
   let warmTimer = null;
   const doc = {
     pageCount: pdf.numPages,
+    layout: layoutApi(fp),
     diagText: () => `pdf.js ${pdfjs.version} · mode ${variant} · ${diag.blank ? 'PAGE BLANK' : 'ok'} · ${diag.ms}ms${diag.err ? ' · ' + diag.err : ''} · Offscreen:${typeof OffscreenCanvas} ImageDecoder:${typeof ImageDecoder} · page from ${lastSource || '-'} · cached ${cached.size}/${pdf.numPages}`,
     // Cache first; otherwise draw live (falling back to a lower resolution if that fails) and save the picture.
     async pageUrl(pageIdx) {

@@ -21,7 +21,7 @@ const BoxFill = ({ rect, color }) => (
 
 const touchUI = () => typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
 
-const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish, localDoc }) => {
+const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish, localDoc, initialStartPage = 1, initialPage = 0 }) => {
     const isTouchUI = useRef(touchUI()).current;
     const [loadError, setLoadError] = useState('');
     const [diag, setDiag] = useState('');
@@ -31,7 +31,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         const t = setInterval(() => setDiag(localDoc.diagText()), 1500);
         return () => clearInterval(t);
     }, [localDoc]);
-    const [pageIdx, setPageIdx] = useState(0);
+    const [pageIdx, setPageIdx] = useState(initialPage);
     const [tool, setTool] = useState('text'); // 'text' | 'image'
     const [imageUrl, setImageUrl] = useState(null);
 
@@ -39,7 +39,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
     const [selectedBoxIdx, setSelectedBoxIdx] = useState(null);
 
     // New State
-    const [startPage, setStartPage] = useState(1);
+    const [startPage, setStartPage] = useState(initialStartPage);
     const [fitWidth, setFitWidth] = useState(true);
     // 'tint' (a light fill) or 'outline' (border only) -- an escape hatch for displays that render the fill badly
     const [boxFill, setBoxFill] = useState(() => { try { return localStorage.getItem(FILL_KEY) === 'outline' ? 'outline' : 'tint'; } catch { return 'tint'; } });
@@ -495,17 +495,37 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         setAnnouncement(`Reading will start from page ${pageIdx + 1}.`);
     };
 
+    // Boxes as page fractions (independent of the render size), using each page's own image size
+    const dimsRef = useRef({});
+    const serializeBoxes = () => {
+        const cur = dimsRef.current[pageIdx] || { w: imgRef.current?.naturalWidth || 800, h: imgRef.current?.naturalHeight || 1100 };
+        const out = {};
+        Object.keys(boxesMap).forEach(k => {
+            const d = dimsRef.current[k] || cur;
+            const list = boxesMap[k].map(b => (b.relative ? b : { ...b, relative: true, x: b.x / d.w, y: b.y / d.h, w: b.w / d.w, h: b.h / d.h }));
+            if (list.length) out[k] = list;
+        });
+        return out;
+    };
+    // Remember this document's boxes, start page and current page (debounced)
+    useEffect(() => {
+        if (!localDoc?.layout) return;
+        const t = setTimeout(() => localDoc.layout.save({ boxes: serializeBoxes(), startPage, page: pageIdx }), 700);
+        return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [boxesMap, startPage, pageIdx, localDoc]);
+
     const prevPage = () => {
         if (pageIdx <= 0) return;
         const cur = boxesMap[String(pageIdx)] || [], prev = boxesMap[String(pageIdx - 1)];
-        if (cur.length > 0 && (!prev || prev.length === 0)) setBoxesMap(m => ({ ...m, [String(pageIdx - 1)]: [...cur] }));
+        if (cur.length > 0 && (!prev || prev.length === 0)) setBoxesMap(m => ({ ...m, [String(pageIdx - 1)]: cur.map(b => toRelative({ ...b })) }));
         setPageIdx(pageIdx - 1); setPreview(null);
     };
     // Same layout everywhere: put this page's boxes on every page that has none yet
     const copyToAllPages = () => {
         const cur = boxesMap[String(pageIdx)] || [];
         if (!cur.length) { flash('Add a box on this page first.'); return; }
-        setBoxesMap(m => { const out = { ...m }; for (let i = 0; i < pageCount; i++) { if (!(out[String(i)] || []).length) out[String(i)] = cur.map(b => ({ ...b })); } return out; });
+        setBoxesMap(m => { const out = { ...m }; for (let i = 0; i < pageCount; i++) { if (!(out[String(i)] || []).length) out[String(i)] = cur.map(b => toRelative({ ...b })); } return out; });
         flash('Boxes copied to every page that had none. Flip through to check, or press Done.');
     };
     const nextPage = () => {
@@ -515,7 +535,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         const currentBoxes = boxesMap[String(pageIdx)] || [];
         const nextBoxes = boxesMap[String(nextIdx)];
         if (currentBoxes.length > 0 && (!nextBoxes || nextBoxes.length === 0)) {
-            setBoxesMap(prev => ({ ...prev, [String(nextIdx)]: [...currentBoxes] }));
+            setBoxesMap(prev => ({ ...prev, [String(nextIdx)]: currentBoxes.map(b => toRelative({ ...b })) }));
             flash(`Copied ${currentBoxes.length} box${currentBoxes.length === 1 ? '' : 'es'} from page ${pageIdx + 1}. Adjust if this page differs.`);
         }
         setPageIdx(nextIdx);
@@ -574,25 +594,8 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                         <X size={16} /> Cancel
                     </button>
                     <button onClick={() => {
-                        // Normalize Scale to Relative (0.0 - 1.0)
-                        const nw = imgRef.current ? imgRef.current.naturalWidth : 800;
-                        const nh = imgRef.current ? imgRef.current.naturalHeight : 1100;
-                        const normMap = {};
-                        Object.keys(boxesMap).forEach(k => {
-                            normMap[k] = boxesMap[k].map(b => {
-                                // If already relative, keep as is
-                                if (b.relative) return b;
-                                // If absolute (pixels), normalize
-                                return {
-                                    ...b,
-                                    relative: true,
-                                    x: b.x / nw,
-                                    y: b.y / nh,
-                                    w: b.w / nw,
-                                    h: b.h / nh
-                                };
-                            });
-                        });
+                        const normMap = serializeBoxes();
+                        localDoc?.layout?.save({ boxes: normMap, startPage, page: pageIdx });
                         onFinish(normMap, startPage);
                     }} className="px-3 py-1 bg-green-700 hover:bg-green-600 rounded font-bold shadow-lg flex items-center gap-1">
                         <Check size={16} /> DONE
@@ -620,7 +623,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                 <span className="text-gray-300 text-xs ml-auto">{isTouchUI ? 'Drag to scroll · corners or two fingers resize · ✥ moves' : 'Drag to draw/move · Arrows move · Shift+arrows resize · Delete removes'}</span>
             </div>
 
-            {diag && <div className="px-3 py-1 text-[10px] text-gray-400 bg-gray-900 border-b border-gray-700 break-words">{diag}{localDoc?.clearCache && <button onClick={async () => { await localDoc.clearCache(); setDiag(localDoc.diagText()); }} className="ml-2 underline text-gray-300">Clear cache</button>}</div>}
+            {diag && <div className="px-3 py-1 text-[10px] text-gray-400 bg-gray-900 border-b border-gray-700 break-words">{diag}{localDoc?.clearCache && <button onClick={async () => { await localDoc.clearCache(); setDiag(localDoc.diagText()); }} className="ml-2 underline text-gray-300">Clear cache</button>}{localDoc?.layout && <button onClick={() => { localDoc.layout.forget(); setBoxesMap({}); setSelectedBoxIdx(null); flash('Saved boxes for this document cleared.'); }} className="ml-2 underline text-gray-300">Forget saved boxes</button>}</div>}
             <div ref={scrollerRef} tabIndex={0} role="region" aria-label="PDF page. Scrollable." className="flex-1 overflow-auto bg-gray-500 flex justify-center p-2 sm:p-4 cursor-default">
                 <div className="relative shadow-2xl bg-white select-none box-default outline-none"
                     style={{
@@ -640,6 +643,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                             onLoad={(e) => {
                                 const nw = e.target.naturalWidth;
                                 const nh = e.target.naturalHeight;
+                                dimsRef.current[pageIdx] = { w: nw, h: nh };
                                 const currentBoxes = boxesMap[String(pageIdx)];
 
                                 if (currentBoxes && currentBoxes.some(b => b.relative)) {

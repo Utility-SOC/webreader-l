@@ -56,6 +56,7 @@ function App() {
   const [showEditor, setShowEditor] = useState(false);
   const [tempFile, setTempFile] = useState(null);
   const [localDoc, setLocalDoc] = useState(null);
+  const [savedView, setSavedView] = useState({ startPage: 1, page: 0 });
 
   // Chapter Selection State
   const [chapters, setChapters] = useState([]);
@@ -200,7 +201,9 @@ function App() {
         try {
           const doc = isPdf ? await openLocalPdf(selected) : await openLocalImage(selected);
           setLocalDoc(doc); setTempFile({ filename: selected.name, page_count: doc.pageCount });
-          setManualBoxes({}); setShowEditor(true);
+          const saved = doc.layout?.load();
+          setManualBoxes(saved?.boxes || {}); setSavedView({ startPage: saved?.startPage || 1, page: Math.min(saved?.page || 0, doc.pageCount - 1) });
+          setShowEditor(true);
         } catch (err) { alert(err.message); }
         finally { setLoading(false); setStatusMessage(""); e.target.value = ""; }
         return;
@@ -596,6 +599,8 @@ function App() {
       pageCount={tempFile.page_count}
       initialBoxes={manualBoxes}
       localDoc={localDoc}
+      initialStartPage={savedView.startPage}
+      initialPage={savedView.page}
       onFinish={handleManualFinish}
       onCancel={() => { setShowEditor(false); setTempFile(null); setManualBoxes(null); setLocalDoc(null); }}
     />;

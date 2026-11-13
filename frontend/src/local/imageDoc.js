@@ -1,4 +1,6 @@
 // On-device manual-layout document for a photo: one "page", OCR'd once (with word positions) so boxes preview instantly.
+import { fingerprint } from './pageCache';
+import { layoutApi } from './layoutStore';
 import { toCanvas, ocrCanvasWords, toWords, tidy } from './extract';
 
 const rel = (b, W, H) => (b.relative ? { x: b.x * W, y: b.y * H, w: b.w * W, h: b.h * H } : { x: b.x, y: b.y, w: b.w, h: b.h });
@@ -14,12 +16,14 @@ function wordsToText(words) {
 
 export async function openLocalImage(file) {
   const canvas = await toCanvas(file);
+  const fp = await fingerprint(file, new Uint8Array(await file.arrayBuffer()));
   let ocr = null, url = null, status = null;
   const ensure = (onStatus) => { if (onStatus) status = onStatus; return (ocr ||= ocrCanvasWords(canvas, (m) => status?.(m))); };
   const inBox = (words, box) => { const r = rel(box, canvas.width, canvas.height); return words.filter((w) => w.cx >= r.x && w.cx <= r.x + r.w && w.cy >= r.y && w.cy <= r.y + r.h); };
 
   return {
     pageCount: 1,
+    layout: layoutApi(fp),
     prefetch: (onStatus) => ensure(onStatus).catch(() => {}),
     async pageUrl() {
       if (!url) {
