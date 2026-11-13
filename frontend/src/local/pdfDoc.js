@@ -5,19 +5,63 @@ import { pdfjs, ocrCanvas, toWords, tidy, safeScale, PDF_OPTS } from './extract'
 const RENDER_SCALE = 1.6;      // editor page image
 const OCR_SCALE = 2.5;         // crops sent to OCR
 
+// pdf.js options, tried in order if a page comes out blank (WebKit/iOS differences in fonts, OffscreenCanvas, ImageDecoder).
+// Force one with ?pdfmode=0|1|2 on the page address.
+const SAFE = { disableFontFace: true, isOffscreenCanvasSupported: false, isImageDecoderSupported: false };
+const VARIANTS = [{ doc: {}, intent: 'display' }, { doc: SAFE, intent: 'display' }, { doc: { ...SAFE, useWasm: false }, intent: 'print' }];
+
+function looksBlank(canvas) {
+  const s = document.createElement('canvas');
+  s.width = 64; s.height = Math.max(1, Math.round((64 * canvas.height) / canvas.width));
+  const ctx = s.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(canvas, 0, 0, s.width, s.height);
+  const d = ctx.getImageData(0, 0, s.width, s.height).data;
+  for (let i = 0; i < d.length; i += 4) if (d[i] < 250 || d[i + 1] < 250 || d[i + 2] < 250) return false;
+  return true;
+}
+
 export async function openLocalPdf(file) {
-  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer(), ...PDF_OPTS }).promise;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const forced = Number(new URLSearchParams(location.search).get('pdfmode'));
+  let variant = forced >= 0 && forced < VARIANTS.length && new URLSearchParams(location.search).has('pdfmode') ? forced : 0;
+  let pdf = null;
+  const diag = { blank: false, ms: 0, err: '' };
+
+  async function open(v) {
+    if (pdf) { try { await pdf.destroy(); } catch { /* already gone */ } }
+    pdf = await pdfjs.getDocument({ data: bytes.slice(), ...PDF_OPTS, ...VARIANTS[v].doc }).promise;
+    variant = v;
+  }
+  await open(variant);
   const urls = new Map();       // pageIdx -> blob URL of the editor image
 
-  async function render(pageIdx, scale) {
+  async function renderOnce(pageIdx, scale) {
     const page = await pdf.getPage(pageIdx + 1);
     const vp = page.getViewport({ scale: safeScale(page, scale) });
     const canvas = document.createElement('canvas');
     canvas.width = Math.floor(vp.width); canvas.height = Math.floor(vp.height);
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    await page.render({ canvasContext: ctx, viewport: vp, intent: VARIANTS[variant].intent }).promise;
     return { page, vp, canvas };
+  }
+
+  // Render; if the result is blank or throws, step through the fallback option sets. A page that is blank in every
+  // mode is probably really blank: report it and go back to the default mode for the next page.
+  async function render(pageIdx, scale) {
+    const t0 = performance.now(), start = variant;
+    diag.err = '';
+    for (;;) {
+      let r = null;
+      try { r = await renderOnce(pageIdx, scale); } catch (e) { diag.err = String(e?.message || e); }
+      const blank = r ? looksBlank(r.canvas) : true;
+      if (r && !blank) { diag.blank = false; diag.ms = Math.round(performance.now() - t0); return r; }
+      if (variant < VARIANTS.length - 1) { await open(variant + 1); continue; }
+      diag.blank = true; diag.ms = Math.round(performance.now() - t0);
+      const last = r; await open(start);
+      if (!last) throw new Error(diag.err || 'render failed');
+      return last;
+    }
   }
 
   const rel = (b, W, H) => (b.relative ? { x: b.x * W, y: b.y * H, w: b.w * W, h: b.h * H } : { x: b.x, y: b.y, w: b.w, h: b.h });
@@ -62,6 +106,7 @@ export async function openLocalPdf(file) {
 
   return {
     pageCount: pdf.numPages,
+    diagText: () => `pdf.js ${pdfjs.version} · mode ${variant} · ${diag.blank ? 'PAGE BLANK' : 'ok'} · ${diag.ms}ms${diag.err ? ' · ' + diag.err : ''} · Offscreen:${typeof OffscreenCanvas} ImageDecoder:${typeof ImageDecoder}`,
     async pageUrl(pageIdx) {
       if (urls.has(pageIdx)) return urls.get(pageIdx);
       const { canvas } = await render(pageIdx, RENDER_SCALE);

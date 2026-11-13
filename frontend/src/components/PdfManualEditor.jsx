@@ -24,6 +24,8 @@ const touchUI = () => typeof window !== 'undefined' && !!window.matchMedia?.('(p
 const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish, localDoc }) => {
     const isTouchUI = useRef(touchUI()).current;
     const [loadError, setLoadError] = useState('');
+    const [diag, setDiag] = useState('');
+    useEffect(() => { localDoc?.prefetch?.(); }, [localDoc]);
     const [pageIdx, setPageIdx] = useState(0);
     const [tool, setTool] = useState('text'); // 'text' | 'image'
     const [imageUrl, setImageUrl] = useState(null);
@@ -69,6 +71,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
             try { url = localDoc ? await localDoc.pageUrl(pageIdx) : `/pdf/${filename}/page/${pageIdx + 1}`; }
             catch (err) { setLoadError(`This page could not be drawn: ${err.message}`); return; }
             setImageUrl(url);
+            if (localDoc?.diagText) setDiag(localDoc.diagText());
             setSelectedBoxIdx(null);
             setPreview(null);
         };
@@ -593,6 +596,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                 <span className="text-gray-300 text-xs ml-auto">{isTouchUI ? 'Drag to scroll · corners or two fingers resize · ✥ moves' : 'Drag to draw/move · Arrows move · Shift+arrows resize · Delete removes'}</span>
             </div>
 
+            {diag && <div className="px-3 py-1 text-[10px] text-gray-400 bg-gray-900 border-b border-gray-700 break-words">{diag}</div>}
             <div ref={scrollerRef} tabIndex={0} role="region" aria-label="PDF page. Scrollable." className="flex-1 overflow-auto bg-gray-500 flex justify-center p-2 sm:p-4 cursor-default">
                 <div className="relative shadow-2xl bg-white select-none box-default outline-none"
                     style={{

@@ -66,7 +66,7 @@ async function loadImage(file) {
 
 // Phone photos are huge; downscale so OCR is fast and memory-safe on iOS (canvas limit ~16MP).
 // Grayscale + contrast stretch is done by hand (Safari/WebKit ignores ctx.filter).
-async function toCanvas(file, maxSide = 2400) {
+export async function toCanvas(file, maxSide = 2400) {
   const im = await loadImage(file);
   const scale = Math.min(1, maxSide / Math.max(im.width, im.height));
   const c = document.createElement('canvas');
@@ -87,6 +87,18 @@ export async function ocrCanvas(canvas, onStatus) {
   const w = await getOcr((m) => { if (m.status === 'recognizing text') onStatus?.(`Reading text… ${Math.round(m.progress * 100)}%`); else if (m.status) onStatus?.(`Preparing OCR (${m.status})…`); });
   const { data } = await w.recognize(canvas);
   return data.text;
+}
+
+// OCR with word positions (for box selection on photos): [{text, cx, cy, para, line}] in reading order.
+export async function ocrCanvasWords(canvas, onStatus) {
+  const w = await getOcr((m) => { if (m.status === 'recognizing text') onStatus?.(`Reading text… ${Math.round(m.progress * 100)}%`); else if (m.status) onStatus?.(`Preparing OCR (${m.status})…`); });
+  const { data } = await w.recognize(canvas, {}, { text: true, blocks: true });
+  const words = []; let para = 0;
+  for (const b of data.blocks || []) for (const p of b.paragraphs || []) {
+    (p.lines || []).forEach((l, line) => (l.words || []).forEach((wd) => words.push({ text: wd.text, cx: (wd.bbox.x0 + wd.bbox.x1) / 2, cy: (wd.bbox.y0 + wd.bbox.y1) / 2, para, line })));
+    para++;
+  }
+  return { words, text: data.text };
 }
 
 async function fromPdf(file, onStatus) {

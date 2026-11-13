@@ -10,6 +10,7 @@ import Library, { DocumentAbout } from './components/Library';
 import { Play, Pause, RotateCcw, Image, BookOpen, Volume2, Headphones, Moon, Sun, ChevronLeft, ChevronRight, UploadCloud, FileText, X, Download } from 'lucide-react';
 import { LOCAL_MODE, extractLocal } from './local/extract';
 import { openLocalPdf } from './local/pdfDoc';
+import { openLocalImage } from './local/imageDoc';
 import { PRESETS, FONTS, ORP_COLOR_PRESETS } from './constants';
 
 const PREFS_KEY = "webreader:preferences:v1";
@@ -185,12 +186,14 @@ function App() {
     setChapters([]);
     setIndex(0);
 
-    if (LOCAL_MODE && selected.name.toLowerCase().endsWith(".pdf")) {
-      const manual = window.confirm("PDF detected. Use the manual box editor?\n\nOK = Draw boxes around the text to read\nCancel = Read the whole document automatically");
+    const isPdf = selected.name.toLowerCase().endsWith(".pdf") || selected.type === "application/pdf";
+    const isImage = selected.type.startsWith("image/") || /\.(png|jpe?g|webp|heic)$/i.test(selected.name);
+    if (LOCAL_MODE && (isPdf || isImage)) {
+      const manual = window.confirm(`${isPdf ? "PDF" : "Photo"} detected. Use the box editor?\n\nOK = Draw boxes around the text to read\nCancel = Read everything automatically`);
       if (manual) {
-        setLoading(true); setStatusMessage("Opening PDF…");
+        setLoading(true); setStatusMessage(isPdf ? "Opening PDF…" : "Preparing photo…");
         try {
-          const doc = await openLocalPdf(selected);
+          const doc = isPdf ? await openLocalPdf(selected) : await openLocalImage(selected);
           setLocalDoc(doc); setTempFile({ filename: selected.name, page_count: doc.pageCount });
           setManualBoxes({}); setShowEditor(true);
         } catch (err) { alert(err.message); }
