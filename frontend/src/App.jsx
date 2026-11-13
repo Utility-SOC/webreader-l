@@ -71,6 +71,8 @@ function App() {
   const [ttsLoading, setTtsLoading] = useState(false);
   const audioElRef = useRef(null);
   const readAloudRef = useRef(false);
+  const playChunkRef = useRef(null);      // always the latest playChunkFrom (utterance callbacks outlive renders)
+  const indexRef = useRef(0);
   const speakToken = useRef(0);          // invalidates callbacks of a cancelled on-device utterance
   const speakTimer = useRef(0);
   const speakChunkRef = useRef({ startIndex: 0, chunkLength: 0, boundaries: [] });
@@ -451,6 +453,7 @@ function App() {
   }, [isPlaying, readAloud, index, words, settings, punctuationRules]);
 
   useEffect(() => { readAloudRef.current = readAloud; }, [readAloud]);
+  useEffect(() => { indexRef.current = index; }, [index]);
 
   // On-device read-aloud (Web Speech API): one utterance per chunk; the reader follows the voice's word-boundary
   // events, or an estimated pace if this voice doesn't report them (some iOS voices don't).
@@ -463,7 +466,7 @@ function App() {
     clearInterval(speakTimer.current);
     let text = ''; const spans = [];
     chunkWords.forEach((w, k) => { if (w.startsWith('[FIGURE:') || w === '\n\n') return; if (text) text += ' '; spans.push({ k, start: text.length }); text += w; });
-    const rate = Math.max(0.5, Math.min(2, settings.wpm / 180));
+    const rate = Math.max(0.5, Math.min(3, settings.wpm / 170));
     const u = new SpeechSynthesisUtterance(text);
     u.rate = rate;
     let gotBoundary = false;
@@ -478,7 +481,7 @@ function App() {
         speakTimer.current = setInterval(() => { n = Math.min(spans.length - 1, n + 1); setIndex(startIdx + spans[n].k); }, per);
       }, 1200);
     };
-    u.onend = () => { if (myToken !== speakToken.current) return; clearInterval(speakTimer.current); if (readAloudRef.current) playChunkFrom(startIdx + chunkWords.length); };
+    u.onend = () => { if (myToken !== speakToken.current) return; clearInterval(speakTimer.current); if (readAloudRef.current) playChunkRef.current(startIdx + chunkWords.length); };
     u.onerror = (e) => { if (myToken !== speakToken.current || e.error === 'interrupted' || e.error === 'canceled') return; alert('Read Aloud failed: ' + (e.error || 'speech error')); setReadAloud(false); setIsPlaying(false); };
     window.speechSynthesis.speak(u);
   };
@@ -540,6 +543,17 @@ function App() {
       setTtsLoading(false);
     }
   };
+
+  playChunkRef.current = playChunkFrom;
+
+  // Changing the speed while the on-device voice is reading: a voice can't change rate mid-sentence, so after the
+  // slider/swipe settles, restart from the word being read at the new rate.
+  useEffect(() => {
+    if (!LOCAL_MODE || !readAloud || !isPlaying) return;
+    const t = setTimeout(() => { stopLocalSpeech(); playChunkRef.current(indexRef.current); }, 350);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.wpm]);
 
   // Map audio playback time -> word index within the current chunk. edge-tts's own tokenization doesn't always
   // match ours 1:1 (numbers expand to words, contractions split), so this maps by *position* (which boundary
