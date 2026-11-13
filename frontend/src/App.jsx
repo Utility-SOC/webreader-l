@@ -68,6 +68,9 @@ function App() {
   const [readAloud, setReadAloud] = useState(false);
   const [ttsLoading, setTtsLoading] = useState(false);
   const audioElRef = useRef(null);
+  const readAloudRef = useRef(false);
+  const speakToken = useRef(0);          // invalidates callbacks of a cancelled on-device utterance
+  const speakTimer = useRef(0);
   const speakChunkRef = useRef({ startIndex: 0, chunkLength: 0, boundaries: [] });
 
   // Dynamic Punctuation State
@@ -158,6 +161,7 @@ function App() {
   // one with the other extraction mode — automatic vs. manual — since that
   // choice is only offered at upload time).
   const resetToUpload = () => {
+    stopLocalSpeech();
     audioElRef.current?.pause();
     setReadAloud(false);
     setWords([]);
@@ -305,8 +309,8 @@ function App() {
         e.preventDefault();
         // Mirrors handleMainPlayPause: while readAloud is on, Play/Pause controls the <audio> element.
         if (readAloud) {
-          if (isPlaying) { audioElRef.current?.pause(); setIsPlaying(false); }
-          else { audioElRef.current?.play(); setIsPlaying(true); }
+          if (isPlaying) { if (LOCAL_MODE) stopLocalSpeech(); else audioElRef.current?.pause(); setIsPlaying(false); }
+          else { if (LOCAL_MODE) playChunkFrom(index); else audioElRef.current?.play(); setIsPlaying(true); }
         } else {
           setIsPlaying(prev => !prev);
         }
@@ -320,7 +324,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showEditor, view, words.length, readAloud, isPlaying]);
+  }, [showEditor, view, words.length, readAloud, isPlaying, index]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mouse Wheel Speed Control — scroll over the reader to speed up/slow down
   const readerCardRef = useRef(null);
@@ -405,6 +409,39 @@ function App() {
     return () => clearTimeout(timerRef.current);
   }, [isPlaying, readAloud, index, words, settings, punctuationRules]);
 
+  useEffect(() => { readAloudRef.current = readAloud; }, [readAloud]);
+
+  // On-device read-aloud (Web Speech API): one utterance per chunk; the reader follows the voice's word-boundary
+  // events, or an estimated pace if this voice doesn't report them (some iOS voices don't).
+  const stopLocalSpeech = () => {
+    speakToken.current++; clearInterval(speakTimer.current);
+    try { window.speechSynthesis?.cancel(); } catch { /* none */ }
+  };
+  const speakLocalChunk = (startIdx, chunkWords) => {
+    const myToken = ++speakToken.current;
+    clearInterval(speakTimer.current);
+    let text = ''; const spans = [];
+    chunkWords.forEach((w, k) => { if (w.startsWith('[FIGURE:') || w === '\n\n') return; if (text) text += ' '; spans.push({ k, start: text.length }); text += w; });
+    const rate = Math.max(0.5, Math.min(2, settings.wpm / 180));
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = rate;
+    let gotBoundary = false;
+    const wordAt = (charIndex) => { let lo = 0, hi = spans.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (spans[mid].start <= charIndex) lo = mid; else hi = mid - 1; } return spans[lo].k; };
+    u.onboundary = (e) => { if (myToken !== speakToken.current) return; gotBoundary = true; clearInterval(speakTimer.current); setIndex(startIdx + wordAt(e.charIndex)); };
+    u.onstart = () => {
+      if (myToken !== speakToken.current) return;
+      setTtsLoading(false);
+      setTimeout(() => {   // no boundary events from this voice: advance on an estimated pace instead
+        if (myToken !== speakToken.current || gotBoundary) return;
+        let n = 0; const per = 60000 / (170 * rate);
+        speakTimer.current = setInterval(() => { n = Math.min(spans.length - 1, n + 1); setIndex(startIdx + spans[n].k); }, per);
+      }, 1200);
+    };
+    u.onend = () => { if (myToken !== speakToken.current) return; clearInterval(speakTimer.current); if (readAloudRef.current) playChunkFrom(startIdx + chunkWords.length); };
+    u.onerror = (e) => { if (myToken !== speakToken.current || e.error === 'interrupted' || e.error === 'canceled') return; alert('Read Aloud failed: ' + (e.error || 'speech error')); setReadAloud(false); setIsPlaying(false); };
+    window.speechSynthesis.speak(u);
+  };
+
   // Word-Flash Sync: fetch + play one chunk of audio starting at startIdx, then chain into the next chunk on
   // 'ended' while readAloud stays on.
   const SPEAK_CHUNK_SIZE = 60;
@@ -420,6 +457,12 @@ function App() {
     if (!speakableText.trim()) {
       // Pure-image chunk (e.g. a page of figures): nothing to speak, advance past it.
       playChunkFrom(startIdx + chunkWords.length);
+      return;
+    }
+
+    if (LOCAL_MODE) {
+      if (!('speechSynthesis' in window)) { alert('This browser has no built-in speech.'); setReadAloud(false); setIsPlaying(false); return; }
+      speakLocalChunk(startIdx, chunkWords);
       return;
     }
 
@@ -484,6 +527,7 @@ function App() {
     if (readAloud) {
       setReadAloud(false);
       setIsPlaying(false);
+      stopLocalSpeech();
       audioElRef.current?.pause();
     } else {
       setIsPlaying(true);
@@ -497,10 +541,10 @@ function App() {
   const handleMainPlayPause = () => {
     if (readAloud) {
       if (isPlaying) {
-        audioElRef.current?.pause();
+        if (LOCAL_MODE) stopLocalSpeech(); else audioElRef.current?.pause();
         setIsPlaying(false);
       } else {
-        audioElRef.current?.play();
+        if (LOCAL_MODE) playChunkFrom(index); else audioElRef.current?.play();
         setIsPlaying(true);
       }
     } else {
@@ -661,10 +705,10 @@ function App() {
                 </div>
 
                 {/* Controls Grid */}
-                <div className="grid grid-cols-3 items-center gap-4">
+                <div className="flex flex-wrap items-center justify-center gap-3 sm:grid sm:grid-cols-3 sm:gap-4">
 
                   {/* Left Actions */}
-                  <div className="flex items-center gap-2 justify-start">
+                  <div className="flex flex-wrap items-center gap-1 sm:gap-2 justify-center sm:justify-start order-2 sm:order-none">
                     <button onClick={resetToUpload} className={`p-2.5 rounded-xl transition-all ${isDark ? 'hover:bg-white/10 text-gray-300 hover:text-white' : 'hover:bg-gray-100 text-gray-700'}`} title="Load a Different File" aria-label="Load a different file">
                       <UploadCloud size={20} />
                     </button>
@@ -699,7 +743,7 @@ function App() {
                       <button onClick={downloadTranscript} className={`p-2.5 rounded-xl transition-all ${isDark ? 'hover:bg-white/10 text-gray-300 hover:text-white' : 'hover:bg-gray-100 text-gray-700'}`} title="Download Transcript" aria-label="Download transcript">
                         <FileText size={20} />
                       </button>
-                      {!readingRoom && (
+                      {!readingRoom && !LOCAL_MODE && (
                         <button onClick={() => setShowAudioModal(true)} className={`p-2.5 rounded-xl transition-all ${isDark ? 'hover:bg-white/10 text-gray-300 hover:text-white' : 'hover:bg-gray-100 text-gray-700'}`} title="Download Audio (TTS)" aria-label="Download audio (text to speech)">
                           <Volume2 size={20} />
                         </button>
@@ -708,7 +752,7 @@ function App() {
                   </div>
 
                   {/* Center Playback */}
-                  <div className="flex items-center justify-center gap-6">
+                  <div className="flex items-center justify-center gap-6 w-full sm:w-auto order-1 sm:order-none">
                     <button onClick={() => setIndex(Math.max(0, index - 50))} aria-label="Back 50 words" className={`p-3 rounded-full transition-all active:scale-90 ${isDark ? 'hover:bg-white/10 text-gray-300' : 'hover:bg-gray-100 text-gray-600'}`}>
                       <ChevronLeft size={24} />
                     </button>
@@ -730,7 +774,7 @@ function App() {
                   </div>
 
                   {/* Right Actions */}
-                  <div className="flex items-center gap-2 justify-end">
+                  <div className="flex items-center gap-2 justify-center sm:justify-end order-3 sm:order-none">
                     <button onClick={() => setIndex(0)} className={`p-2.5 rounded-xl transition-all ${isDark ? 'hover:bg-white/10 text-gray-300 hover:text-white' : 'hover:bg-gray-100 text-gray-700'}`} title="Restart" aria-label="Restart from beginning">
                       <RotateCcw size={20} />
                     </button>
