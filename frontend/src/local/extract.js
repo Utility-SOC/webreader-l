@@ -9,6 +9,15 @@ export const LOCAL_MODE = import.meta.env.VITE_LOCAL === '1';
 const BASE = import.meta.env.BASE_URL;
 pdfjs.GlobalWorkerOptions.workerSrc = `${BASE}ocr/pdf.worker.min.mjs`;
 
+// Data pdf.js fetches at runtime (bundled, so it works offline)
+export const PDF_OPTS = {
+  wasmUrl: `${BASE}ocr/pdfjs/wasm/`,
+  cMapUrl: `${BASE}ocr/pdfjs/cmaps/`,
+  cMapPacked: true,
+  standardFontDataUrl: `${BASE}ocr/pdfjs/standard_fonts/`,
+  iccUrl: `${BASE}ocr/pdfjs/iccs/`,
+};
+
 // iOS caps canvases at ~16M pixels: pick a render scale that stays under it for big pages.
 export const safeScale = (page, want) => { const v = page.getViewport({ scale: 1 }); return Math.min(want, Math.sqrt(12e6 / (v.width * v.height))); };
 
@@ -81,7 +90,7 @@ export async function ocrCanvas(canvas, onStatus) {
 }
 
 async function fromPdf(file, onStatus) {
-  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer(), ...PDF_OPTS }).promise;
   const pages = [];
   for (let p = 1; p <= pdf.numPages; p++) {
     onStatus?.(`Page ${p} of ${pdf.numPages}…`);

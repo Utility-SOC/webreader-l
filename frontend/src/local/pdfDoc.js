@@ -1,12 +1,12 @@
 // On-device stand-in for the backend's manual-layout endpoints (page render, box preview, box extraction).
 // Boxes use the same shape as the server: {x,y,w,h,type,relative}, fractions of the page when relative.
-import { pdfjs, ocrCanvas, toWords, tidy, safeScale } from './extract';
+import { pdfjs, ocrCanvas, toWords, tidy, safeScale, PDF_OPTS } from './extract';
 
 const RENDER_SCALE = 1.6;      // editor page image
 const OCR_SCALE = 2.5;         // crops sent to OCR
 
 export async function openLocalPdf(file) {
-  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer(), ...PDF_OPTS }).promise;
   const urls = new Map();       // pageIdx -> blob URL of the editor image
 
   async function render(pageIdx, scale) {

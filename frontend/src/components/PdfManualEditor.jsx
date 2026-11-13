@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { ArrowLeft, ArrowRight, Trash2, Check, X, Image as ImageIcon, Type, Plus, Volume2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Trash2, Check, X, Image as ImageIcon, Type, Plus, Volume2, Move } from 'lucide-react';
 import Modal from './Modal';
 
 // Plain hex / rgba() colours on purpose: they work in every browser, including ones that don't understand the newer
@@ -19,7 +19,11 @@ const BoxFill = ({ rect, color }) => (
          style={{ ...rect, backgroundColor: color, mixBlendMode: 'multiply' }} />
 );
 
+const touchUI = () => typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
+
 const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish, localDoc }) => {
+    const isTouchUI = useRef(touchUI()).current;
+    const [loadError, setLoadError] = useState('');
     const [pageIdx, setPageIdx] = useState(0);
     const [tool, setTool] = useState('text'); // 'text' | 'image'
     const [imageUrl, setImageUrl] = useState(null);
@@ -60,7 +64,10 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
     useEffect(() => {
         const loadPage = async () => {
             // Using proxy path from vite config
-            const url = localDoc ? await localDoc.pageUrl(pageIdx) : `/pdf/${filename}/page/${pageIdx + 1}`;
+            setLoadError('');
+            let url;
+            try { url = localDoc ? await localDoc.pageUrl(pageIdx) : `/pdf/${filename}/page/${pageIdx + 1}`; }
+            catch (err) { setLoadError(`This page could not be drawn: ${err.message}`); return; }
             setImageUrl(url);
             setSelectedBoxIdx(null);
             setPreview(null);
@@ -176,18 +183,56 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         return { dx: Math.max(Math.abs(a.x - b.x), 40), dy: Math.max(Math.abs(a.y - b.y), 40), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
     };
 
+    // Touch: one finger scrolls the page (with momentum); dragging a corner resizes; dragging the centre grip of the
+    // selected box moves it; two fingers pinch-resize. Tapping a box selects it, tapping empty page deselects.
+    const scrollGesture = useRef(null);
+    const flingRaf = useRef(0);
+    const GRIP = 34;   // screen px radius of the move grip
+
+    const screenScale = () => (fitWidth && imgRef.current ? imgRef.current.clientWidth / (imgRef.current.naturalWidth || 800) : 1);
+    const onGrip = (x, y, box) => {
+        const r = GRIP / screenScale();
+        return Math.abs(x - (box.x + box.w / 2)) <= r && Math.abs(y - (box.y + box.h / 2)) <= r;
+    };
+
+    const startFling = (vx, vy) => {
+        cancelAnimationFrame(flingRaf.current);
+        let last = performance.now();
+        const step = (now) => {
+            const el = scrollerRef.current; if (!el) return;
+            const dt = now - last; last = now;
+            el.scrollLeft -= vx * dt; el.scrollTop -= vy * dt;
+            vx *= Math.pow(0.95, dt / 16); vy *= Math.pow(0.95, dt / 16);
+            if (Math.abs(vx) > 0.02 || Math.abs(vy) > 0.02) flingRaf.current = requestAnimationFrame(step);
+        };
+        flingRaf.current = requestAnimationFrame(step);
+    };
+
     const handlePointerDown = (e) => {
+        cancelAnimationFrame(flingRaf.current);
         pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
         if (pointers.current.size === 2) {
-            // Abort whatever the first finger started (a half-drawn box) and begin a pinch
+            // Second finger: abort the first finger's gesture and start a pinch on the selected box
+            scrollGesture.current = null;
             setDraftBox(null);
             setInteraction({ mode: 'idle', startPoint: { x: 0, y: 0 }, initialBox: null, handle: null });
             const sel = selectedBoxIdx !== null ? (boxesMap[String(pageIdx)] || [])[selectedBoxIdx] : null;
             pinch.current = { ...pinchGeom(), box: sel ? { ...sel } : null, scrollLeft: scrollerRef.current?.scrollLeft || 0, scrollTop: scrollerRef.current?.scrollTop || 0 };
             return;
         }
-        if (pointers.current.size === 1) handleMouseDown(e);
+        if (pointers.current.size !== 1) return;
+        if (e.pointerType !== 'touch') { handleMouseDown(e); return; }
+
+        const { x, y } = getLoc(e);
+        const sel = selectedBoxIdx !== null ? (boxesMap[String(pageIdx)] || [])[selectedBoxIdx] : null;
+        if (sel) {
+            const handle = getHandleAt(x, y, sel);
+            if (handle) { setInteraction({ mode: 'resizing', startPoint: { x, y }, initialBox: { ...sel }, handle }); return; }
+            if (onGrip(x, y, sel)) { setInteraction({ mode: 'moving', startPoint: { x, y }, initialBox: { ...sel }, handle: null }); return; }
+        }
+        const el = scrollerRef.current;
+        scrollGesture.current = { sx: e.clientX, sy: e.clientY, left: el?.scrollLeft || 0, top: el?.scrollTop || 0, moved: false, x, y, vx: 0, vy: 0, t: performance.now(), lx: e.clientX, ly: e.clientY };
     };
 
     const handlePointerMove = (e) => {
@@ -196,13 +241,28 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         if (pointers.current.size >= 2 && pinch.current) {
             const g = pinchGeom(); const p0 = pinch.current;
             if (p0.box) {
-                const w = Math.max(10, p0.box.w * (g.dx / p0.dx));
-                const h = Math.max(10, p0.box.h * (g.dy / p0.dy));
-                updateBox(selectedBoxIdx, { x: p0.box.x + (p0.box.w - w) / 2, y: p0.box.y + (p0.box.h - h) / 2, w, h });
+                const nw = imgRef.current?.naturalWidth || 800, nh = imgRef.current?.naturalHeight || 1100;
+                const w = Math.min(nw, Math.max(10, p0.box.w * (g.dx / p0.dx)));
+                const h = Math.min(nh, Math.max(10, p0.box.h * (g.dy / p0.dy)));
+                const x = Math.max(0, Math.min(nw - w, p0.box.x + (p0.box.w - w) / 2));
+                const y = Math.max(0, Math.min(nh - h, p0.box.y + (p0.box.h - h) / 2));
+                updateBox(selectedBoxIdx, { x, y, w, h });
             } else if (scrollerRef.current) {
                 scrollerRef.current.scrollLeft = p0.scrollLeft - (g.cx - p0.cx);
                 scrollerRef.current.scrollTop = p0.scrollTop - (g.cy - p0.cy);
             }
+            return;
+        }
+        const sg = scrollGesture.current;
+        if (sg && scrollerRef.current) {
+            const dx = e.clientX - sg.sx, dy = e.clientY - sg.sy;
+            if (Math.abs(dx) + Math.abs(dy) > 6) sg.moved = true;
+            scrollerRef.current.scrollLeft = sg.left - dx;
+            scrollerRef.current.scrollTop = sg.top - dy;
+            const now = performance.now(), dt = Math.max(1, now - sg.t);
+            sg.vx = 0.8 * sg.vx + 0.2 * ((e.clientX - sg.lx) / dt);
+            sg.vy = 0.8 * sg.vy + 0.2 * ((e.clientY - sg.ly) / dt);
+            sg.t = now; sg.lx = e.clientX; sg.ly = e.clientY;
             return;
         }
         handleMouseMove(e);
@@ -212,6 +272,17 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         const wasPinching = pointers.current.size >= 2;
         pointers.current.delete(e.pointerId);
         if (wasPinching) { pinch.current = null; if (pointers.current.size === 0) handleMouseUp(); return; }
+        const sg = scrollGesture.current;
+        if (sg) {
+            scrollGesture.current = null;
+            if (!sg.moved) {                                     // a tap: select the box under the finger, or deselect
+                const hit = getBoxAt(sg.x, sg.y);
+                setSelectedBoxIdx(hit);
+            } else if (e.type === 'pointerup' && performance.now() - sg.t < 80) {
+                startFling(sg.vx, sg.vy);
+            }
+            return;
+        }
         handleMouseUp();
     };
 
@@ -281,11 +352,19 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
     const addBoxAtCenter = () => {
         const nw = imgRef.current?.naturalWidth || 800;
         const nh = imgRef.current?.naturalHeight || 1100;
-        const box = { x: nw * 0.1, y: nh * 0.4, w: nw * 0.8, h: nh * 0.1, type: tool };
+        const sc = screenScale();
+        let cy = nh * 0.45, vis = nh * 0.3;
+        if (imgRef.current && scrollerRef.current) {
+            const ir = imgRef.current.getBoundingClientRect(), sr = scrollerRef.current.getBoundingClientRect();
+            const top = Math.max(sr.top, ir.top), bottom = Math.min(sr.bottom, ir.bottom);
+            if (bottom > top) { cy = ((top + bottom) / 2 - ir.top) / sc; vis = (bottom - top) / sc; }
+        }
+        const h = Math.max(30, Math.min(nh * 0.2, vis * 0.4));
+        const box = { x: nw * 0.08, y: Math.max(0, Math.min(nh - h, cy - h / 2)), w: nw * 0.84, h, type: tool };
         const count = (boxesMap[String(pageIdx)] || []).length;
         addBox(box);
         setSelectedBoxIdx(count);
-        setAnnouncement(`${tool === 'image' ? 'Image' : 'Text'} box ${count + 1} added. Arrow keys move it, Shift plus arrows resize it.`);
+        setAnnouncement(`${tool === 'image' ? 'Image' : 'Text'} box ${count + 1} added.`);
     };
 
     // Geometry of a box as fractions of the page (what the backend expects)
@@ -334,6 +413,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         if (!text) { setAnnouncement('No text found in this box.'); return; }
         speak(text);
     };
+    const HS = isTouchUI ? { width: 22, height: 22, margin: -5 } : undefined;
     const speechSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
 
     // Keyboard: Delete, move (arrows), resize (Shift+arrows), Ctrl = 10px steps,
@@ -508,9 +588,9 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                         )}
                     </>
                 ) : (
-                    <span className="text-gray-200">No box selected. Press N to add a box, Tab or [ ] to select one, or drag on the page.</span>
+                    <span className="text-gray-200">{isTouchUI ? 'Tap Add box, then drag a corner or pinch to fit it.' : 'No box selected. Press N to add a box, Tab or [ ] to select one, or drag on the page.'}</span>
                 )}
-                <span className="text-gray-300 text-xs ml-auto">Drag to draw/move · drag a corner or pinch with two fingers to resize · two fingers on empty page pan · Arrows move · Shift+arrows resize · Delete removes</span>
+                <span className="text-gray-300 text-xs ml-auto">{isTouchUI ? 'Drag to scroll · corners or two fingers resize · ✥ moves' : 'Drag to draw/move · Arrows move · Shift+arrows resize · Delete removes'}</span>
             </div>
 
             <div ref={scrollerRef} tabIndex={0} role="region" aria-label="PDF page. Scrollable." className="flex-1 overflow-auto bg-gray-500 flex justify-center p-2 sm:p-4 cursor-default">
@@ -521,6 +601,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                         maxWidth: fitWidth ? '100%' : 'unset'
                     }}
                 >
+                    {loadError && <div className="p-6 text-red-700 bg-white">{loadError}</div>}
                     {imageUrl && (
                         <img
                             ref={imgRef}
@@ -610,7 +691,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                                         image boxes are dotted), so the labels cover as little of the page as possible. */}
                                     <div className={`absolute -top-4 left-0 text-[10px] leading-4 px-1 font-bold rounded-sm text-white ${isSelected ? 'ring-1 ring-white' : ''}`}
                                          style={{ backgroundColor: col.label }}>{isSelected ? `${i + 1} ${typeLabel}` : i + 1}</div>
-                                    {isSelected && (<><div aria-hidden="true" className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border border-gray-500 cursor-nw-resize hover:bg-blue-200"></div><div aria-hidden="true" className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border border-gray-500 cursor-ne-resize hover:bg-blue-200"></div><div aria-hidden="true" className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border border-gray-500 cursor-sw-resize hover:bg-blue-200"></div><div aria-hidden="true" className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border border-gray-500 cursor-se-resize hover:bg-blue-200"></div></>)}
+                                    {isSelected && (<><div aria-hidden="true" style={HS} className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border border-gray-500 cursor-nw-resize hover:bg-blue-200"></div><div aria-hidden="true" style={HS} className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border border-gray-500 cursor-ne-resize hover:bg-blue-200"></div><div aria-hidden="true" style={HS} className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border border-gray-500 cursor-sw-resize hover:bg-blue-200"></div><div aria-hidden="true" style={HS} className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border border-gray-500 cursor-se-resize hover:bg-blue-200"></div>{isTouchUI && (<div aria-hidden="true" className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/90 border-2 border-blue-700 text-blue-800 flex items-center justify-center pointer-events-none" style={{ width: 44, height: 44 }}><Move size={22} /></div>)}</>)}
                                 </div>
                             );
                         })}

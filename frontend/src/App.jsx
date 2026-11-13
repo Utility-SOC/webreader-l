@@ -88,6 +88,7 @@ function App() {
   const [libraryItem, setLibraryItem] = useState(null);   // details of the library document open in the reader
   const [view, setView] = useState(window.location.hash === '#/library' ? 'library' : 'reader');
   useEffect(() => {
+    if (LOCAL_MODE) return;   // no server in the on-device build
     Promise.all([fetch('/health').then(r => r.json()), fetch('/library/facets').then(r => r.json()).catch(() => ({}))])
       .then(([health, facets]) => {
         const room = health.mode === 'reading_room';
