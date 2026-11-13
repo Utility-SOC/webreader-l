@@ -7,15 +7,18 @@ import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 export const LOCAL_MODE = import.meta.env.VITE_LOCAL === '1';
 
 const BASE = import.meta.env.BASE_URL;
-pdfjs.GlobalWorkerOptions.workerSrc = `${BASE}ocr/pdf.worker.min.mjs`;
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(`${BASE}ocr/pdf.worker.min.mjs`, document.baseURI).href;
 
 // Data pdf.js fetches at runtime (bundled, so it works offline)
+// Absolute URLs: pdf.js fetches these from inside its worker, which would resolve relative paths against the
+// worker's own folder (docs/ocr/) instead of the page, giving 404s and silently blank pages.
+const abs = (path) => new URL(`${BASE}${path}`, document.baseURI).href;
 export const PDF_OPTS = {
-  wasmUrl: `${BASE}ocr/pdfjs/wasm/`,
-  cMapUrl: `${BASE}ocr/pdfjs/cmaps/`,
+  wasmUrl: abs('ocr/pdfjs/wasm/'),
+  cMapUrl: abs('ocr/pdfjs/cmaps/'),
   cMapPacked: true,
-  standardFontDataUrl: `${BASE}ocr/pdfjs/standard_fonts/`,
-  iccUrl: `${BASE}ocr/pdfjs/iccs/`,
+  standardFontDataUrl: abs('ocr/pdfjs/standard_fonts/'),
+  iccUrl: abs('ocr/pdfjs/iccs/'),
 };
 
 // iOS caps canvases at ~16M pixels: pick a render scale that stays under it for big pages.
