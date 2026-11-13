@@ -521,13 +521,6 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         if (cur.length > 0 && (!prev || prev.length === 0)) setBoxesMap(m => ({ ...m, [String(pageIdx - 1)]: cur.map(b => toRelative({ ...b })) }));
         setPageIdx(pageIdx - 1); setPreview(null);
     };
-    // Same layout everywhere: put this page's boxes on every page that has none yet
-    const copyToAllPages = () => {
-        const cur = boxesMap[String(pageIdx)] || [];
-        if (!cur.length) { flash('Add a box on this page first.'); return; }
-        setBoxesMap(m => { const out = { ...m }; for (let i = 0; i < pageCount; i++) { if (!(out[String(i)] || []).length) out[String(i)] = cur.map(b => toRelative({ ...b })); } return out; });
-        flash('Boxes copied to every page that had none. Flip through to check, or press Done.');
-    };
     const nextPage = () => {
         if (pageIdx >= pageCount - 1) return;
         const nextIdx = pageIdx + 1;
@@ -561,16 +554,18 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                     </div>
                 </div>
 
-                <div className="flex gap-2 items-center overflow-x-auto">
+                <div className="flex flex-wrap gap-2 items-center">
                     <button onClick={() => setTool('text')} title="Text box tool" aria-label="Text box tool" aria-pressed={tool === 'text'} className={`p-2 rounded flex items-center gap-1 text-xs font-bold ${tool === 'text' ? 'bg-blue-700 ring-1 ring-white' : 'bg-gray-700'}`}>
                         <Type size={20} /> <span className="hidden md:inline">Text</span>
                     </button>
                     <button onClick={() => setTool('image')} title="Image box tool" aria-label="Image box tool" aria-pressed={tool === 'image'} className={`p-2 rounded flex items-center gap-1 text-xs font-bold ${tool === 'image' ? 'bg-orange-700 ring-1 ring-white' : 'bg-gray-700'}`}>
                         <ImageIcon size={20} /> <span className="hidden md:inline">Image</span>
                     </button>
-                    <button onClick={copyToAllPages} title="Copy this page's boxes to every page that has none" className="px-2 py-2 rounded bg-gray-700 text-xs font-bold whitespace-nowrap">Same on all pages</button>
                     <button onClick={addBoxAtCenter} title="Add a box (N)" aria-keyshortcuts="N" className="px-2 py-2 rounded bg-gray-700 text-xs font-bold flex items-center gap-1 whitespace-nowrap">
                         <Plus size={16} /> Add box <span className="hidden md:inline opacity-80">(N)</span>
+                    </button>
+                    <button onClick={deleteSelectedBox} disabled={selectedBoxIdx === null} aria-label={selectedBoxIdx === null ? 'Delete box (select a box first)' : `Delete box ${selectedBoxIdx + 1} (Delete key)`} title="Delete selected box" className="p-2 bg-red-700 rounded disabled:opacity-35 disabled:bg-gray-700">
+                        <Trash2 size={20} />
                     </button>
                     <button onClick={() => setFitWidth(!fitWidth)} aria-label="Page zoom" aria-pressed={fitWidth} title="Toggle fit-to-width / actual size" className={`p-2 rounded bg-gray-700 text-xs font-bold w-12`}>{fitWidth ? 'FIT' : '1:1'}</button>
                     <button type="button" onClick={toggleBoxFill} aria-pressed={boxFill === 'outline'}
@@ -580,13 +575,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                         {boxFill === 'outline' ? 'Outline' : 'Tint'}
                     </button>
 
-                    {selectedBoxIdx !== null ? (
-                        <button onClick={deleteSelectedBox} aria-label={`Delete box ${selectedBoxIdx + 1} (Delete key)`} title="Delete box" className="p-2 bg-red-700 rounded">
-                            <Trash2 size={20} />
-                        </button>
-                    ) : (
-                        <button onClick={setAsStart} className="px-2 py-1 bg-purple-700 rounded text-xs font-bold whitespace-nowrap" title="Start from this page">Start Here (pg{startPage})</button>
-                    )}
+                    <button onClick={setAsStart} className="px-2 py-2 bg-purple-700 rounded text-xs font-bold whitespace-nowrap" title="Start from this page">Start pg {startPage}</button>
                 </div>
 
                 <div className="flex gap-2">
