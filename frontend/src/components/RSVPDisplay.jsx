@@ -1,6 +1,6 @@
 import React from 'react';
 
-const RSVPDisplay = ({ words, index, settings, appearance, isDark, images }) => {
+const RSVPDisplay = ({ words, index, settings, appearance, isDark, images, fill = false }) => {
     if (!words || words.length === 0) return <div className="text-center p-10 opacity-80">Upload a file to begin</div>;
 
     const currentItem = words[index];
@@ -53,7 +53,7 @@ const RSVPDisplay = ({ words, index, settings, appearance, isDark, images }) => 
             style={{
                 fontFamily: appearance.fontFamily,
                 fontSize: `${appearance.fontSize}px`,
-                height: '400px',
+                height: fill ? '100%' : '400px',
                 color: appearance.textColor || undefined
             }}
         >

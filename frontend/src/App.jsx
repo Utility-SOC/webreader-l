@@ -6,9 +6,10 @@ import PdfManualEditor from './components/PdfManualEditor';
 import ImageGallery from './components/ImageGallery';
 import ChapterSelector from './components/ChapterSelector';
 import MiniReader from './components/MiniReader';
+import FocusReader from './components/FocusReader';
 import AudioModal from './components/AudioModal';
 import Library, { DocumentAbout } from './components/Library';
-import { Play, Pause, RotateCcw, Image, BookOpen, Volume2, Headphones, Moon, Sun, ChevronLeft, ChevronRight, UploadCloud, FileText, X, Download } from 'lucide-react';
+import { Play, Pause, RotateCcw, Image, BookOpen, Volume2, Headphones, Moon, Sun, ChevronLeft, ChevronRight, Maximize2, UploadCloud, FileText, X, Download } from 'lucide-react';
 import { LOCAL_MODE, extractLocal } from './local/extract';
 import { openLocalPdf } from './local/pdfDoc';
 import { openLocalImage } from './local/imageDoc';
@@ -371,6 +372,26 @@ function App() {
   };
   const onWordsPointerUp = () => { swipeRef.current = null; };
   const onWordsClick = () => { if (swipedRef.current) { swipedRef.current = false; return; } handleMainPlayPause(); };
+
+  // Focus mode: a full-screen reader. Entered with the button, or automatically when a phone is turned to landscape
+  // (where the page layout leaves almost no room for the word). Exiting in landscape stays out until you rotate again.
+  const LANDSCAPE_Q = '(orientation: landscape) and (max-height: 520px)';
+  const [manualFocus, setManualFocus] = useState(false);
+  const [landscape, setLandscape] = useState(() => window.matchMedia?.(LANDSCAPE_Q).matches || false);
+  const [focusOff, setFocusOff] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia?.(LANDSCAPE_Q); if (!mq) return;
+    const f = () => { setLandscape(mq.matches); setFocusOff(false); };
+    mq.addEventListener('change', f);
+    return () => mq.removeEventListener('change', f);
+  }, []);
+  const focusActive = words.length > 0 && !loading && view === 'reader' && !showEditor && (manualFocus || (landscape && !focusOff));
+  const exitFocus = () => { setManualFocus(false); if (landscape) setFocusOff(true); };
+  useEffect(() => {
+    if (!focusActive) return;
+    const prev = document.body.style.overflow; document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [focusActive]);
 
   // Mini reader: appears when the main reader card has scrolled out of view
   const [readerOffscreen, setReaderOffscreen] = useState(false);
@@ -797,6 +818,11 @@ function App() {
                       </button>
                     )}
 
+                    <button type="button" onClick={() => setManualFocus(true)} aria-label="Focus mode (full screen reader)" title="Focus mode"
+                      className={`p-2.5 rounded-xl transition-all ${isDark ? 'hover:bg-white/10 text-gray-300 hover:text-white' : 'hover:bg-gray-100 text-gray-700'}`}>
+                      <Maximize2 size={20} />
+                    </button>
+
                     {/* DOWNLOADS */}
                     <div className="flex gap-1 ml-2 pl-2 border-l border-white/10">
                       <button onClick={downloadTranscript} className={`p-2.5 rounded-xl transition-all ${isDark ? 'hover:bg-white/10 text-gray-300 hover:text-white' : 'hover:bg-gray-100 text-gray-700'}`} title="Download Transcript" aria-label="Download transcript">
@@ -1011,12 +1037,13 @@ function App() {
       </div>
 
       {/* Word-Flash Sync playback element: kept mounted across chunk transitions so onEnded can chain the next chunk. */}
-      {words.length > 0 && !loading && readerOffscreen && !miniClosed && view === 'reader' && (
+      {words.length > 0 && !loading && readerOffscreen && !miniClosed && !focusActive && view === 'reader' && (
         <MiniReader words={words} images={images} index={index} settings={settings} appearance={appearance} isDark={isDark}
           isPlaying={isPlaying} onToggle={handleMainPlayPause}
           onJump={() => readerCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
           onClose={() => setMiniClosed(true)} />
       )}
+      {focusActive && <FocusReader words={words} images={images} index={index} setIndex={setIndex} settings={settings} setSettings={setSettings} appearance={appearance} isDark={isDark} isPlaying={isPlaying} onToggle={handleMainPlayPause} onExit={exitFocus} />}
       <audio ref={audioElRef} onTimeUpdate={handleReadAloudTimeUpdate} onEnded={handleReadAloudEnded} className="hidden" />
 
       {/* Modals */}
