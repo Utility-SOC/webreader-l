@@ -5,6 +5,7 @@ import PdfManualEditor from './components/PdfManualEditor';
 // ContextView import removed/unused in this cleanup to focus on core features, or can be re-added if essential
 import ImageGallery from './components/ImageGallery';
 import ChapterSelector from './components/ChapterSelector';
+import MiniReader from './components/MiniReader';
 import AudioModal from './components/AudioModal';
 import Library, { DocumentAbout } from './components/Library';
 import { Play, Pause, RotateCcw, Image, BookOpen, Volume2, Headphones, Moon, Sun, ChevronLeft, ChevronRight, UploadCloud, FileText, X, Download } from 'lucide-react';
@@ -340,6 +341,43 @@ function App() {
     return () => el.removeEventListener('wheel', handleWheel);
   }, [showEditor]);
 
+  // Horizontal swipe on the word box changes speed smoothly (1 WPM steps): a swipe across the box's full width
+  // is about +/-200 WPM. Taps still play/pause; vertical drags still scroll the page.
+  const [speedHint, setSpeedHint] = useState(null);
+  const swipeRef = useRef(null);
+  const swipedRef = useRef(false);
+  const hintTimer = useRef(0);
+  const onWordsPointerDown = (e) => {
+    swipeRef.current = { x: e.clientX, y: e.clientY, wpm: settings.wpm, w: e.currentTarget.getBoundingClientRect().width || 300, active: false };
+    swipedRef.current = false;
+  };
+  const onWordsPointerMove = (e) => {
+    const s = swipeRef.current; if (!s) return;
+    const dx = e.clientX - s.x, dy = e.clientY - s.y;
+    if (!s.active) {
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.2) { s.active = true; swipedRef.current = true; try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not capturable */ } }
+      else return;
+    }
+    const wpm = Math.max(100, Math.min(900, Math.round(s.wpm + (dx / s.w) * 200)));
+    setSettings((prev) => (prev.wpm === wpm ? prev : { ...prev, wpm }));
+    setSpeedHint(wpm);
+    clearTimeout(hintTimer.current);
+    hintTimer.current = setTimeout(() => setSpeedHint(null), 900);
+  };
+  const onWordsPointerUp = () => { swipeRef.current = null; };
+  const onWordsClick = () => { if (swipedRef.current) { swipedRef.current = false; return; } handleMainPlayPause(); };
+
+  // Mini reader: appears when the main reader card has scrolled out of view
+  const [readerOffscreen, setReaderOffscreen] = useState(false);
+  const [miniClosed, setMiniClosed] = useState(false);
+  useEffect(() => {
+    const el = readerCardRef.current;
+    if (!el || !('IntersectionObserver' in window)) return;
+    const io = new IntersectionObserver(([en]) => { setReaderOffscreen(!en.isIntersecting); if (en.isIntersecting) setMiniClosed(false); }, { threshold: 0.02 });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [view, showEditor, words.length]);
+
   const handleManualFinish = async (boxesMap, startPage = 1) => {
     setShowEditor(false);
     setLoading(true);
@@ -674,7 +712,9 @@ function App() {
                   </div>}
                 </div>
               ) : (
-                <div className="w-full h-full flex items-center justify-center cursor-pointer" onClick={handleMainPlayPause}>
+                <div className="w-full h-full flex items-center justify-center cursor-pointer relative" style={{ touchAction: 'pan-y' }}
+                  onClick={onWordsClick} onPointerDown={onWordsPointerDown} onPointerMove={onWordsPointerMove} onPointerUp={onWordsPointerUp} onPointerCancel={onWordsPointerUp}>
+                  {speedHint !== null && <div aria-live="polite" className="absolute top-2 left-1/2 -translate-x-1/2 z-20 px-4 py-1.5 rounded-full bg-black/70 text-white font-mono text-sm pointer-events-none">{speedHint} WPM</div>}
                   <RSVPDisplay words={words} images={images} index={index} settings={settings} appearance={appearance} isDark={isDark} />
                 </div>
               )}
@@ -952,6 +992,12 @@ function App() {
       </div>
 
       {/* Word-Flash Sync playback element: kept mounted across chunk transitions so onEnded can chain the next chunk. */}
+      {words.length > 0 && !loading && readerOffscreen && !miniClosed && view === 'reader' && (
+        <MiniReader words={words} images={images} index={index} settings={settings} appearance={appearance} isDark={isDark}
+          isPlaying={isPlaying} onToggle={handleMainPlayPause}
+          onJump={() => readerCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+          onClose={() => setMiniClosed(true)} />
+      )}
       <audio ref={audioElRef} onTimeUpdate={handleReadAloudTimeUpdate} onEnded={handleReadAloudEnded} className="hidden" />
 
       {/* Modals */}

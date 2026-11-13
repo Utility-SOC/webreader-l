@@ -65,6 +65,9 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
 
     // Screen-reader announcements + first/last-word preview of the selected box
     const [announcement, setAnnouncement] = useState('');
+    const [toast, setToast] = useState('');
+    const toastTimer = useRef(0);
+    const flash = (msg) => { setAnnouncement(msg); setToast(msg); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(''), 3500); };
     const [preview, setPreview] = useState(null);
 
     // Load Image
@@ -492,7 +495,19 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         setAnnouncement(`Reading will start from page ${pageIdx + 1}.`);
     };
 
-    const prevPage = () => { setPageIdx(Math.max(0, pageIdx - 1)); setPreview(null); };
+    const prevPage = () => {
+        if (pageIdx <= 0) return;
+        const cur = boxesMap[String(pageIdx)] || [], prev = boxesMap[String(pageIdx - 1)];
+        if (cur.length > 0 && (!prev || prev.length === 0)) setBoxesMap(m => ({ ...m, [String(pageIdx - 1)]: [...cur] }));
+        setPageIdx(pageIdx - 1); setPreview(null);
+    };
+    // Same layout everywhere: put this page's boxes on every page that has none yet
+    const copyToAllPages = () => {
+        const cur = boxesMap[String(pageIdx)] || [];
+        if (!cur.length) { flash('Add a box on this page first.'); return; }
+        setBoxesMap(m => { const out = { ...m }; for (let i = 0; i < pageCount; i++) { if (!(out[String(i)] || []).length) out[String(i)] = cur.map(b => ({ ...b })); } return out; });
+        flash('Boxes copied to every page that had none. Flip through to check, or press Done.');
+    };
     const nextPage = () => {
         if (pageIdx >= pageCount - 1) return;
         const nextIdx = pageIdx + 1;
@@ -501,6 +516,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
         const nextBoxes = boxesMap[String(nextIdx)];
         if (currentBoxes.length > 0 && (!nextBoxes || nextBoxes.length === 0)) {
             setBoxesMap(prev => ({ ...prev, [String(nextIdx)]: [...currentBoxes] }));
+            flash(`Copied ${currentBoxes.length} box${currentBoxes.length === 1 ? '' : 'es'} from page ${pageIdx + 1}. Adjust if this page differs.`);
         }
         setPageIdx(nextIdx);
         setPreview(null);
@@ -509,6 +525,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
     return (
         <Modal labelId="editor-title" onClose={() => {}} className="fixed inset-0 bg-gray-900 bg-opacity-95 z-50 flex flex-col text-white select-none">
             <div className="sr-only" role="status" aria-live="polite">{announcement}</div>
+            {toast && <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] max-w-[90vw] px-4 py-2 rounded-full bg-black/85 text-white text-sm shadow-xl pointer-events-none">{toast}</div>}
             {/* Toolbar */}
             <div className="p-3 bg-gray-800 flex flex-wrap gap-2 justify-between items-center shadow-md border-b border-gray-700">
                 <div className="flex items-center gap-2">
@@ -531,6 +548,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                     <button onClick={() => setTool('image')} title="Image box tool" aria-label="Image box tool" aria-pressed={tool === 'image'} className={`p-2 rounded flex items-center gap-1 text-xs font-bold ${tool === 'image' ? 'bg-orange-700 ring-1 ring-white' : 'bg-gray-700'}`}>
                         <ImageIcon size={20} /> <span className="hidden md:inline">Image</span>
                     </button>
+                    <button onClick={copyToAllPages} title="Copy this page's boxes to every page that has none" className="px-2 py-2 rounded bg-gray-700 text-xs font-bold whitespace-nowrap">Same on all pages</button>
                     <button onClick={addBoxAtCenter} title="Add a box (N)" aria-keyshortcuts="N" className="px-2 py-2 rounded bg-gray-700 text-xs font-bold flex items-center gap-1 whitespace-nowrap">
                         <Plus size={16} /> Add box <span className="hidden md:inline opacity-80">(N)</span>
                     </button>
