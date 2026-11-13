@@ -1,5 +1,6 @@
 // On-device stand-in for the backend's manual-layout endpoints (page render, box preview, box extraction).
 // Boxes use the same shape as the server: {x,y,w,h,type,relative}, fractions of the page when relative.
+import { cacheGet, cachePut, cacheKeys, cacheClear, fingerprint } from './pageCache';
 import { pdfjs, ocrCanvas, toWords, tidy, safeScale, PDF_OPTS } from './extract';
 
 const RENDER_SCALE = 1.6;      // editor page image
@@ -34,6 +35,10 @@ export async function openLocalPdf(file) {
   }
   await open(variant);
   const urls = new Map();       // pageIdx -> blob URL of the editor image
+  const fp = await fingerprint(file, bytes);
+  const keyOf = (i) => `${fp}:${i}:v1`;
+  const cached = new Set((await cacheKeys(`${fp}:`)).map((k) => Number(k.split(':')[1])));
+  let closed = false, lastSource = '';
 
   async function renderOnce(pageIdx, scale) {
     const page = await pdf.getPage(pageIdx + 1);
@@ -104,17 +109,41 @@ export async function openLocalPdf(file) {
     return txt;
   }
 
-  return {
+  let warmTimer = null;
+  const doc = {
     pageCount: pdf.numPages,
-    diagText: () => `pdf.js ${pdfjs.version} · mode ${variant} · ${diag.blank ? 'PAGE BLANK' : 'ok'} · ${diag.ms}ms${diag.err ? ' · ' + diag.err : ''} · Offscreen:${typeof OffscreenCanvas} ImageDecoder:${typeof ImageDecoder}`,
+    diagText: () => `pdf.js ${pdfjs.version} · mode ${variant} · ${diag.blank ? 'PAGE BLANK' : 'ok'} · ${diag.ms}ms${diag.err ? ' · ' + diag.err : ''} · Offscreen:${typeof OffscreenCanvas} ImageDecoder:${typeof ImageDecoder} · page from ${lastSource || '-'} · cached ${cached.size}/${pdf.numPages}`,
+    // Cache first; otherwise draw live (falling back to a lower resolution if that fails) and save the picture.
     async pageUrl(pageIdx) {
-      if (urls.has(pageIdx)) return urls.get(pageIdx);
-      const { canvas } = await render(pageIdx, RENDER_SCALE);
-      const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.85));
+      if (urls.has(pageIdx)) { lastSource = 'memory'; return urls.get(pageIdx); }
+      const hit = await cacheGet(keyOf(pageIdx));
+      if (hit) { lastSource = 'cache'; const u = URL.createObjectURL(hit); urls.set(pageIdx, u); cached.add(pageIdx); return u; }
+      let r;
+      try { r = await render(pageIdx, RENDER_SCALE); lastSource = 'live'; }
+      catch { r = await render(pageIdx, 1); lastSource = 'live (low-res fallback)'; }
+      const blob = await new Promise((res) => r.canvas.toBlob(res, 'image/jpeg', 0.85));
+      r.canvas.width = r.canvas.height = 1;      // release the big bitmap right away (iOS memory)
       const u = URL.createObjectURL(blob);
       urls.set(pageIdx, u);
+      if (!diag.blank) { cachePut(keyOf(pageIdx), blob); cached.add(pageIdx); }   // never cache a blank render
       return u;
     },
+    // Fill the cache around the page being viewed, one page at a time while idle.
+    warm(center) {
+      const order = [];
+      for (let d = 1; d <= 5; d++) { order.push(center + d); if (d <= 2) order.push(center - d); }
+      const todo = order.filter((i) => i >= 0 && i < pdf.numPages && !cached.has(i) && !urls.has(i));
+      if (warmTimer) clearTimeout(warmTimer);
+      const next = () => {
+        if (closed || !todo.length) return;
+        if (document.hidden) { warmTimer = setTimeout(next, 2000); return; }
+        const i = todo.shift();
+        doc.pageUrl(i).catch(() => {}).finally(() => { warmTimer = setTimeout(next, 600); });
+      };
+      warmTimer = setTimeout(next, 800);
+    },
+    close() { closed = true; if (warmTimer) clearTimeout(warmTimer); },
+    clearCache: async () => { await cacheClear(); cached.clear(); },
     boxText,
     // Same contract as /process_pdf: boxed pages use their boxes, other pages are read automatically.
     async extract(boxesMap, startPage = 1, onStatus) {
@@ -141,4 +170,5 @@ export async function openLocalPdf(file) {
       return { words, images };
     },
   };
+  return doc;
 }

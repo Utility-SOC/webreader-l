@@ -25,7 +25,12 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
     const isTouchUI = useRef(touchUI()).current;
     const [loadError, setLoadError] = useState('');
     const [diag, setDiag] = useState('');
-    useEffect(() => { localDoc?.prefetch?.(); }, [localDoc]);
+    useEffect(() => { localDoc?.prefetch?.(); return () => localDoc?.close?.(); }, [localDoc]);
+    useEffect(() => {   // keep the status line (cache progress) current
+        if (!localDoc?.diagText) return;
+        const t = setInterval(() => setDiag(localDoc.diagText()), 1500);
+        return () => clearInterval(t);
+    }, [localDoc]);
     const [pageIdx, setPageIdx] = useState(0);
     const [tool, setTool] = useState('text'); // 'text' | 'image'
     const [imageUrl, setImageUrl] = useState(null);
@@ -72,6 +77,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
             catch (err) { setLoadError(`This page could not be drawn: ${err.message}`); return; }
             setImageUrl(url);
             if (localDoc?.diagText) setDiag(localDoc.diagText());
+            localDoc?.warm?.(pageIdx);
             setSelectedBoxIdx(null);
             setPreview(null);
         };
@@ -596,7 +602,7 @@ const PdfManualEditor = ({ filename, pageCount, initialBoxes, onCancel, onFinish
                 <span className="text-gray-300 text-xs ml-auto">{isTouchUI ? 'Drag to scroll · corners or two fingers resize · ✥ moves' : 'Drag to draw/move · Arrows move · Shift+arrows resize · Delete removes'}</span>
             </div>
 
-            {diag && <div className="px-3 py-1 text-[10px] text-gray-400 bg-gray-900 border-b border-gray-700 break-words">{diag}</div>}
+            {diag && <div className="px-3 py-1 text-[10px] text-gray-400 bg-gray-900 border-b border-gray-700 break-words">{diag}{localDoc?.clearCache && <button onClick={async () => { await localDoc.clearCache(); setDiag(localDoc.diagText()); }} className="ml-2 underline text-gray-300">Clear cache</button>}</div>}
             <div ref={scrollerRef} tabIndex={0} role="region" aria-label="PDF page. Scrollable." className="flex-1 overflow-auto bg-gray-500 flex justify-center p-2 sm:p-4 cursor-default">
                 <div className="relative shadow-2xl bg-white select-none box-default outline-none"
                     style={{
